@@ -1,0 +1,139 @@
+function [y_ident_full,yx,freq_rel,damp_rel,modal_shapes,freq_rel2,ao,bo,co] = ERA(yx,dt,refNum,begin,len,ndof,order)
+% ERA_RK(inputFileName,dt,layout,begin,cutter)
+%
+% yx - input vector in format [Z2...ZN]
+%
+% dt - sampling time
+% 
+% layout - placment of the sensors for modal shapes visualization
+% 
+% refNumInLayout - number of reference channel in layout
+%
+% begin - from which point data should be taken
+% 
+% cutter - how much data should be taken
+%
+% MIMO ERA - "Multi-Input Multi-Output System Identification Using Impulse
+%            Responses", Isao YAMAGUCHI, Tokio KASAI, Hirotaka IGAWA
+%
+% MA - "Modal Analysis", Jimin He, Zhi-Fang Fu
+% ndof    system order
+
+% cut out the processed part of the signal
+yx = yx(begin:begin+len-1,:);
+
+% normalize to maximum value of the reference channel
+[mmax,mmax_idx] = max(abs(yx(:,refNum)));
+yx = yx./mmax * abs(yx(mmax_idx,refNum));
+
+% transposition
+y_noise = yx';
+
+% flip input data so that responses correspond to input channels
+y_noise = flipdim(y_noise,1);
+
+p=order; %len/2;
+
+% building Hankel matrix (H0 and H1)
+
+[pass, inputs] = size(yx);
+
+h1=zeros(p-1,(p-1)*inputs);h2=zeros(p-1,(p-1)*inputs);
+for jj=1:p-1
+    for ii=jj:p-1;
+        idx = ii+jj-1;
+            for kk=0:inputs-1
+                h1(ii,jj*inputs-kk) = y_noise(kk+1,idx);
+                h1(jj,ii*inputs-kk) = y_noise(kk+1,idx);          
+            end
+        idx = ii+jj-0;
+            for kk=0:inputs-1
+                h2(ii,jj*inputs-kk) = y_noise(kk+1,idx);
+                h2(jj,ii*inputs-kk) = y_noise(kk+1,idx);
+            end
+    end
+end
+
+%  transpose matrix
+h1 = h1';
+h2 = h2';
+
+% preform decomposition of matrix h1: (eg. 6 - "MIMO ERA")
+[u,gg,v]=svd(h1);
+% calculate sqrt needed for (eg 7 - "MIMO ERA"), (eg 8 - "MIMO ERA")
+g=sqrt(gg);
+% diagonalize matrix
+gam=diag(g);
+
+%reduction of system, assume ndof degrees of freedom
+nn=1:ndof;
+g=g(nn,nn);
+u=u(:,nn);
+v=v(:,nn);
+
+% calculate controllability matrix
+Q=g*v';
+% calculate observability matrix
+P=u*g;
+
+% calculate inverse of sum (exactly : ^(-1/2)) needed for (eq 11 - "MIMO ERA")
+gi=inv(g);
+%Pi=gi*v';
+%Qi=u*gi;
+
+% calculate left part of (eq 11 - "MIMO ERA")
+L=gi*u';
+% calculate right part of (eq 11 - "MIMO ERA")
+R=v*gi;
+
+% calculate matrix ao ("MA" , where Ep and El are assumed to be diag(1))
+ao=L*h2*R;
+% calculate matrix bo, it is part of controllability matrix
+bo=Q(:,[1]);
+% calculate matrix co, it is part of observability matrix
+co=P([1:inputs],:);
+
+% just for DEBUG
+% build a discret time system out of identified data
+% identif_c = ss(ao,bo,co,0,dt)
+% convert discret system to continues system
+identif = d2c(ss(ao,bo,co,0,dt));
+
+% transform eigenvalues from discret-time space (z) to continues-time space (s)
+eig_c = log(eig(ao))/(dt);
+
+% Check! It holds that:
+% ac=logm(ao)/dt;
+% eig(ac)
+% stop
+
+% calculate natural frequencies [rad/sec]
+freq_rel = abs(eig_c);
+
+% natural frequencies [Hz]
+freq_rel2 = abs(eig_c)/(2*pi);
+% damping [1]
+damp_rel = -real(eig_c)./abs(eig_c);
+
+[V,D] = eig(ao); % diagonal matrix D of eigenvalues
+                % a full matrix V whose columns are the corresponding
+                % eigenvectors
+
+% calculate modal shapes
+modal_shapes = co * V;
+
+% perform fixes so that inputs correspond to outputs
+modal_shapes = flipdim(modal_shapes,2);
+
+% perform fixes so that modal shape vectors correspond to frequencies
+freq_rel = flipdim(freq_rel,1);
+freq_rel2 = flipdim(freq_rel2,1);
+damp_rel = flipdim(damp_rel,1);
+
+
+% compare results identified system vs real data
+y_ident_full = [];
+t=(1:len)*dt;
+u=[[1];zeros(len-1,1)];  % we excite the 1st degree of freedom
+y_ident_full= dlsim(ao,bo,co,0,u);
+
